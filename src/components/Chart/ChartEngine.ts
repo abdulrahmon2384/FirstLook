@@ -52,7 +52,29 @@ export class ChartEngine {
     [DrawingType.RECTANGLE]: { strokeColor: '#2962ff', fillColor: '#2962ff33', lineWidth: 1 },
     [DrawingType.BRUSH]: { color: '#2962ff', lineWidth: 2 },
     [DrawingType.PATH]: { color: '#2962ff', lineWidth: 2 },
+    [DrawingType.LONG_POSITION]: { profitColor: '#26a69a', lossColor: '#ef5350', opacity: 0.2 },
+    [DrawingType.SHORT_POSITION]: { profitColor: '#26a69a', lossColor: '#ef5350', opacity: 0.2 },
   };
+
+  private loadSettings() {
+    try {
+      const saved = localStorage.getItem('chart_drawing_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        this.lastUsedSettings = { ...this.lastUsedSettings, ...parsed };
+      }
+    } catch (e) {
+      console.error('Failed to load drawing settings', e);
+    }
+  }
+
+  private saveSettings() {
+    try {
+      localStorage.setItem('chart_drawing_settings', JSON.stringify(this.lastUsedSettings));
+    } catch (e) {
+      console.error('Failed to save drawing settings', e);
+    }
+  }
   private velocityX: number = 0;
   private velocityY: number = 0;
   private friction: number = 0.5; 
@@ -81,6 +103,7 @@ export class ChartEngine {
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!; 
+    this.loadSettings();
     this.setupEvents();
     this.startAnimationLoop();
   }
@@ -350,6 +373,26 @@ export class ChartEngine {
                 drawing.points[1].time = coords.time;
                 if (drawing.points[2]) drawing.points[2].time = coords.time;
               }
+            } else if (drawing.type === DrawingType.RECTANGLE && drawing.points.length >= 2) {
+              if (this.draggingPointIdx === 0) {
+                drawing.points[0] = coords;
+              } else if (this.draggingPointIdx === 1) {
+                drawing.points[1] = coords;
+              } else if (this.draggingPointIdx === 2) {
+                // Virtual Corner (p0.time, p1.price)
+                drawing.points[0].time = coords.time;
+                drawing.points[1].price = coords.price;
+              } else if (this.draggingPointIdx === 3) {
+                // Virtual Corner (p1.time, p0.price)
+                drawing.points[1].time = coords.time;
+                drawing.points[0].price = coords.price;
+              } else if (this.draggingPointIdx === 4) {
+                // Left side middle (p0.time change)
+                drawing.points[0].time = coords.time;
+              } else if (this.draggingPointIdx === 5) {
+                // Right side middle (p1.time change)
+                drawing.points[1].time = coords.time;
+              }
             } else {
               // Default individual point dragging
               drawing.points[this.draggingPointIdx] = coords;
@@ -378,7 +421,7 @@ export class ChartEngine {
       if (this.activeDrawing && this.isDrawingToolEnabled) {
         const coords = this.getValuesAtCoords(x, y);
         if (coords) {
-          if (this.activeDrawing.type === DrawingType.BRUSH || this.activeDrawing.type === DrawingType.PATH) {
+          if (this.activeDrawing.type === DrawingType.BRUSH) {
             const lastPoint = this.activeDrawing.points[this.activeDrawing.points.length - 1];
             if (lastPoint) {
               const { x: lx, y: ly } = this.getPointCoords(lastPoint);
@@ -390,7 +433,7 @@ export class ChartEngine {
             } else {
               this.activeDrawing.points.push(coords);
             }
-          } else if (this.activeDrawing.points.length > 1) {
+          } else if (this.activeDrawing.type !== DrawingType.PATH && this.activeDrawing.points.length > 1) {
             // Enforce constraints during creation
             if (this.activeDrawing.type === DrawingType.HORIZONTAL_LINE || this.activeDrawing.type === DrawingType.HORIZONTAL_RAY) {
               coords.price = this.activeDrawing.points[0].price;
@@ -690,12 +733,17 @@ export class ChartEngine {
 
   public setDrawings(drawings: Drawing[]) {
     // Detect if settings were changed to update persistence
+    let changed = false;
     drawings.forEach(d => {
       const existing = this.drawings.find(prev => prev.id === d.id);
       if (existing && JSON.stringify(existing.settings) !== JSON.stringify(d.settings)) {
         this.lastUsedSettings[d.type] = { ...d.settings };
+        changed = true;
       }
     });
+    if (changed) {
+      this.saveSettings();
+    }
     this.drawings = drawings;
   }
 
@@ -846,13 +894,23 @@ export class ChartEngine {
 
       // Restore anchor points for selected drawing
       if (isSelected) {
-        coords.forEach(p => {
+        let handles = [...coords];
+        if (d.type === DrawingType.RECTANGLE && coords.length >= 2) {
+          // Add virtual corners (p0.x, p1.y) and (p1.x, p0.y)
+          handles.push({ x: coords[0].x, y: coords[1].y });
+          handles.push({ x: coords[1].x, y: coords[0].y });
+          // Add middle handles for left and right edges
+          handles.push({ x: coords[0].x, y: (coords[0].y + coords[1].y) / 2 });
+          handles.push({ x: coords[1].x, y: (coords[0].y + coords[1].y) / 2 });
+        }
+
+        handles.forEach(p => {
           ctx.setLineDash([]); // Anchors are always solid
           ctx.fillStyle = '#ffffff';
-          ctx.strokeStyle = d.settings.color || '#000000';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = d.settings.strokeColor || d.settings.color || '#2962ff';
+          ctx.lineWidth = 1.5;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
         });
@@ -1561,6 +1619,25 @@ export class ChartEngine {
           }
         }
 
+        // Add 4-corner hit test for Rectangle
+        if (d.type === DrawingType.RECTANGLE && coords.length >= 2) {
+          // Virtual Corner 1: (p0.x, p1.y)
+          const dist2 = Math.sqrt((coords[0].x - x)**2 + (coords[1].y - y)**2);
+          if (dist2 < 15) return { id: d.id, pointIdx: 2 };
+          
+          // Virtual Corner 2: (p1.x, p0.y)
+          const dist3 = Math.sqrt((coords[1].x - x)**2 + (coords[0].y - y)**2);
+          if (dist3 < 15) return { id: d.id, pointIdx: 3 };
+
+          // Middle Left handle: (p0.x, (p0.y+p1.y)/2)
+          const dist4 = Math.sqrt((coords[0].x - x)**2 + ((coords[0].y + coords[1].y)/2 - y)**2);
+          if (dist4 < 15) return { id: d.id, pointIdx: 4 };
+
+          // Middle Right handle: (p1.x, (p0.y+p1.y)/2)
+          const dist5 = Math.sqrt((coords[1].x - x)**2 + ((coords[0].y + coords[1].y)/2 - y)**2);
+          if (dist5 < 15) return { id: d.id, pointIdx: 5 };
+        }
+
         // Special cases for infinite lines or rays 
         if (d.type === DrawingType.HORIZONTAL_LINE) {
           const distY = Math.abs(coords[0].y - y);
@@ -1670,6 +1747,11 @@ export class ChartEngine {
               return { id: d.id, pointIdx: -1 };
             }
           }
+        }
+
+        // Skip segment hit test for types that shouldn't have diagonal hits
+        if (d.type === DrawingType.RECTANGLE || d.type === DrawingType.FIB_RETRACEMENT || d.type === DrawingType.LONG_POSITION || d.type === DrawingType.SHORT_POSITION || d.type === DrawingType.PRICE_RANGE || d.type === DrawingType.DATE_RANGE) {
+          continue;
         }
 
         if (coords.length >= 2) {
