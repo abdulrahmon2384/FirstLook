@@ -1,0 +1,6 @@
+{
+  "name": "QuantLab - Custom Backtesting Terminal",
+  "description": "A high-performance trading backtesting platform built from scratch with a custom canvas charting engine and strategy runner.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
